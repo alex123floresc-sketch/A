@@ -1,0 +1,265 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>App de Gastos e Ingresos</title>
+  <style>
+    :root{--bg:#0f1724;--card:#0b1220;--muted:#9aa4b2;--accent:#60a5fa;--success:#34d399;--danger:#fb7185}
+    *{box-sizing:border-box}
+    body{font-family:Inter, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial; background:linear-gradient(180deg,#071029 0%, #071726 100%); color:#e6eef6; padding:20px}
+    .container{max-width:1000px;margin:0 auto}
+    header{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+    h1{font-size:20px}
+    .card{background:var(--card);padding:16px;border-radius:12px;box-shadow:0 6px 18px rgba(2,6,23,0.6);}
+    form{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+    input, select, button{padding:8px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+    .full{grid-column:span 4}
+    .controls{display:flex;gap:8px;flex-wrap:wrap}
+    .flex{display:flex;gap:10px;align-items:center}
+    table{width:100%;border-collapse:collapse;margin-top:12px}
+    th,td{padding:8px;border-bottom:1px solid rgba(255,255,255,0.03);text-align:left;font-size:14px}
+    .badge{padding:4px 8px;border-radius:999px;font-size:13px}
+    .income{background:rgba(52,211,153,0.12);color:var(--success)}
+    .expense{background:rgba(251,113,133,0.08);color:var(--danger)}
+    .totals{display:flex;gap:12px;margin-top:12px}
+    .totals .item{padding:12px;border-radius:10px;background:linear-gradient(180deg, rgba(255,255,255,0.02), transparent);min-width:150px}
+    .muted{color:var(--muted)}
+    .actions{display:flex;gap:8px}
+    @media (max-width:800px){form{grid-template-columns:repeat(2,1fr)}.full{grid-column:span 2}}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <header>
+      <h1>Controlador de Gastos e Ingresos</h1>
+      <div class="muted">Base de datos local (IndexedDB)</div>
+    </header>
+
+    <section class="card">
+      <h2>Agregar movimiento</h2>
+      <form id="txForm">
+        <input type="number" step="0.01" id="amount" placeholder="Monto (ej. 150.50)" required />
+        <select id="type">
+          <option value="ingreso">Ingreso</option>
+          <option value="gasto">Gasto</option>
+        </select>
+        <input type="text" id="category" placeholder="Categoría (ej. Comida)" required />
+        <input type="date" id="date" required />
+        <input type="text" id="description" class="full" placeholder="Descripción (opcional)" />
+        <div class="full actions">
+          <button type="submit">Guardar movimiento</button>
+          <button type="button" id="exportBtn">Exportar CSV</button>
+          <label style="display:inline-flex;align-items:center;gap:8px;cursor:pointer">
+            <input type="file" id="importFile" accept="text/csv" style="display:none">Importar CSV
+          </label>
+          <button type="button" id="clearBtn">Borrar todo (local)</button>
+        </div>
+      </form>
+
+      <div class="totals" id="totals">
+        <div class="item">
+          <div class="muted">Total Ingresos</div>
+          <div id="totalIncome">S/ 0.00</div>
+        </div>
+        <div class="item">
+          <div class="muted">Total Gastos</div>
+          <div id="totalExpense">S/ 0.00</div>
+        </div>
+        <div class="item">
+          <div class="muted">Balance</div>
+          <div id="balance">S/ 0.00</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="card" style="margin-top:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <h2>Movimientos</h2>
+        <div class="flex">
+          <label class="muted">Filtrar:</label>
+          <select id="filterType"><option value="todos">Todos</option><option value="ingreso">Ingresos</option><option value="gasto">Gastos</option></select>
+          <input type="month" id="filterMonth">
+          <button id="applyFilter">Aplicar</button>
+          <button id="clearFilter">Limpiar</button>
+        </div>
+      </div>
+
+      <div id="listWrap"></div>
+    </section>
+
+    <footer style="margin-top:12px; text-align:center; color:var(--muted)">
+      App simple — datos guardados localmente en tu navegador mediante IndexedDB.
+    </footer>
+  </div>
+
+  <script>
+    // --- IndexedDB helper ---
+    const DB_NAME = 'gastosDB';
+    const DB_VERSION = 1;
+    const STORE = 'transactions';
+
+    function openDB(){
+      return new Promise((resolve, reject) => {
+        const req = indexedDB.open(DB_NAME, DB_VERSION);
+        req.onupgradeneeded = e => {
+          const db = e.target.result;
+          if(!db.objectStoreNames.contains(STORE)){
+            const os = db.createObjectStore(STORE, { keyPath: 'id' });
+            os.createIndex('date','date',{unique:false});
+            os.createIndex('type','type',{unique:false});
+            os.createIndex('category','category',{unique:false});
+          }
+        }
+        req.onsuccess = e => resolve(e.target.result);
+        req.onerror = e => reject(e.target.error);
+      })
+    }
+
+    function addTransaction(tx){
+      return openDB().then(db => new Promise((resolve, reject)=>{
+        const t = db.transaction(STORE,'readwrite');
+        const store = t.objectStore(STORE);
+        store.add(tx);
+        t.oncomplete = ()=>{db.close(); resolve();}
+        t.onerror = e=>{db.close(); reject(e.target.error)};
+      }))
+    }
+
+    function getAllTransactions(){
+      return openDB().then(db=>new Promise((resolve,reject)=>{
+        const t = db.transaction(STORE,'readonly');
+        const store = t.objectStore(STORE);
+        const req = store.getAll();
+        req.onsuccess = ()=>{db.close(); resolve(req.result)};
+        req.onerror = e=>{db.close(); reject(e.target.error)};
+      }))
+    }
+
+    function deleteTransaction(id){
+      return openDB().then(db=>new Promise((resolve,reject)=>{
+        const t = db.transaction(STORE,'readwrite');
+        t.objectStore(STORE).delete(id);
+        t.oncomplete = ()=>{db.close(); resolve();}
+        t.onerror = e=>{db.close(); reject(e.target.error)};
+      }))
+    }
+
+    function clearAll(){
+      return openDB().then(db=>new Promise((resolve,reject)=>{
+        const t = db.transaction(STORE,'readwrite');
+        t.objectStore(STORE).clear();
+        t.oncomplete = ()=>{db.close(); resolve();}
+        t.onerror = e=>{db.close(); reject(e.target.error)};
+      }))
+    }
+
+    // --- UI & logic ---
+    const form = document.getElementById('txForm');
+    const listWrap = document.getElementById('listWrap');
+    const totalIncomeEl = document.getElementById('totalIncome');
+    const totalExpenseEl = document.getElementById('totalExpense');
+    const balanceEl = document.getElementById('balance');
+
+    function uid(){return 't_' + Math.random().toString(36).slice(2,9)}
+
+    form.addEventListener('submit', async (e)=>{
+      e.preventDefault();
+      const amount = parseFloat(document.getElementById('amount').value);
+      const type = document.getElementById('type').value;
+      const category = document.getElementById('category').value || 'General';
+      const date = document.getElementById('date').value;
+      const description = document.getElementById('description').value || '';
+      if(isNaN(amount) || !date){alert('Completa monto y fecha');return}
+      const tx = { id: uid(), amount: amount, type, category, date, description };
+      await addTransaction(tx);
+      form.reset();
+      render();
+    })
+
+    async function render(filter={type:'todos',month:''}){
+      const all = await getAllTransactions();
+      let list = all.slice().sort((a,b)=> new Date(b.date) - new Date(a.date));
+      if(filter.type && filter.type!=='todos') list = list.filter(x=>x.type===filter.type);
+      if(filter.month){
+        const [y,m] = filter.month.split('-');
+        list = list.filter(x=>{ const d = new Date(x.date); return d.getFullYear()==y && (d.getMonth()+1)==parseInt(m)})
+      }
+
+      // totals
+      const income = list.filter(x=>x.type==='ingreso').reduce((s,x)=>s+x.amount,0);
+      const expense = list.filter(x=>x.type==='gasto').reduce((s,x)=>s+x.amount,0);
+      totalIncomeEl.textContent = 'S/ ' + income.toFixed(2);
+      totalExpenseEl.textContent = 'S/ ' + expense.toFixed(2);
+      balanceEl.textContent = 'S/ ' + (income - expense).toFixed(2);
+
+      // render table
+      if(list.length===0){ listWrap.innerHTML = '<div class="muted">No hay movimientos</div>'; return }
+      let html = '<table><thead><tr><th>Fecha</th><th>Tipo</th><th>Categoria</th><th>Descripción</th><th>Monto</th><th></th></tr></thead><tbody>';
+      for(const tx of list){
+        html += `<tr>
+          <td>${tx.date}</td>
+          <td><span class="badge ${tx.type==='ingreso'? 'income':'expense'}">${tx.type}</span></td>
+          <td>${tx.category}</td>
+          <td>${tx.description || '-'}</td>
+          <td>${tx.type==='ingreso'? 'S/ ' + tx.amount.toFixed(2) : '- S/ ' + tx.amount.toFixed(2)}</td>
+          <td><button data-id="${tx.id}" class="delBtn">Eliminar</button></td>
+        </tr>`;
+      }
+      html += '</tbody></table>';
+      listWrap.innerHTML = html;
+      document.querySelectorAll('.delBtn').forEach(b=>b.addEventListener('click', async ()=>{
+        const id = b.getAttribute('data-id');
+        if(confirm('Eliminar movimiento?')){ await deleteTransaction(id); render(); }
+      }))
+    }
+
+    // filters
+    document.getElementById('applyFilter').addEventListener('click', ()=>{
+      const type = document.getElementById('filterType').value;
+      const month = document.getElementById('filterMonth').value;
+      render({type,month});
+    })
+    document.getElementById('clearFilter').addEventListener('click', ()=>{ document.getElementById('filterType').value='todos'; document.getElementById('filterMonth').value=''; render(); })
+
+    // export CSV
+    document.getElementById('exportBtn').addEventListener('click', async ()=>{
+      const all = await getAllTransactions();
+      if(all.length===0){ alert('No hay datos para exportar'); return }
+      const rows = [['id','date','type','category','description','amount']];
+      for(const r of all) rows.push([r.id, r.date, r.type, r.category, '"'+(r.description||'')+'"', r.amount]);
+      const csv = rows.map(r=>r.join(',')).join('\n');
+      const blob = new Blob([csv], {type:'text/csv'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a'); a.href = url; a.download = 'gastos_ingresos.csv'; a.click(); URL.revokeObjectURL(url);
+    })
+
+    // import CSV (simple parser)
+    document.getElementById('importFile').addEventListener('change', async (e)=>{
+      const f = e.target.files[0]; if(!f) return;
+      const text = await f.text();
+      const lines = text.split(/\r?\n/).filter(Boolean);
+      // expect header or simple rows
+      for(let i=1;i<lines.length;i++){
+        const cols = lines[i].split(',');
+        if(cols.length<6) continue;
+        const [id,date,type,category,description,amount] = cols;
+        const tx = { id: id || uid(), date: date, type: type, category: category, description: description.replace(/(^"|"$)/g,''), amount: parseFloat(amount) };
+        try{ await addTransaction(tx);}catch(err){console.warn('skip',err)}
+      }
+      e.target.value = '';
+      render();
+      alert('Importación completada (parsing simple)');
+    })
+
+    document.getElementById('clearBtn').addEventListener('click', async ()=>{ if(confirm('¿Borrar todos los datos locales?')){ await clearAll(); render(); } })
+
+    // inicializar fecha actual en form
+    document.getElementById('date').value = new Date().toISOString().slice(0,10);
+
+    // primera renderización
+    render();
+
+  </script>
+</body>
+</html>
